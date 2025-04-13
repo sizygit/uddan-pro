@@ -17,8 +17,11 @@ DEFAULT_SIZE = 480
 
 class MujocoModel(object):
 
-    def __init__(self, model_path, render=False):
-        self.full_path = os.path.join(_FOLDER_PATH, "udaan", "models",
+    def __init__(self, model_path, render=False, pwdpath = False):
+        if pwdpath:
+            self.full_path = model_path ## use this if the model path is given as the full path
+        else:
+            self.full_path = os.path.join(_FOLDER_PATH, "udaan", "models",
                                       "assets", "mjcf", model_path)
         if not os.path.exists(self.full_path):
             raise OSError(f"File {self.full_path} does not exist")
@@ -54,14 +57,13 @@ class MujocoModel(object):
         """执行 MuJoCo 仿真步骤"""
         mujoco.mj_step(self.model, self.data, n_frames)
         if self.render:
+            # self.viewer.add_marker(
+            #     pos=np.array([0, 0, 0]),
+            #     size=[0.025, 0, 0],
+            #     rgba=[0, 0, 0.1, 0.8],
+            #     type=mujoco.mjtGeom.mjGEOM_SPHERE,
+            #     label="origin")
             self.viewer.render()
-            self.viewer.add_marker(
-                pos=[0, 0, 0],
-                size=[0.025, 0.025, 0.025],
-                rgba=[0, 0, 0.1, 0.8],
-                type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                label="origin",
-            )
             # try:
             #     self.viewer.render()
             # except Exception as e:
@@ -86,6 +88,22 @@ class MujocoModel(object):
                 2 * (q[0] * q[0] + q[3] * q[3]) - 1,
             ],
         ])
+
+    def _rotation2quat(self, R):
+        tr = np.trace(R)
+        if tr > 0:
+            S = np.sqrt(tr + 1.0) * 2
+            qw, qx, qy, qz = 0.25 * S, (R[2, 1] - R[1, 2]) / S, (R[0, 2] - R[2, 0]) / S, (R[1, 0] - R[0, 1]) / S
+        elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+            S = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2
+            qw, qx, qy, qz = (R[2, 1] - R[1, 2]) / S, 0.25 * S, (R[0, 1] + R[1, 0]) / S, (R[0, 2] + R[2, 0]) / S
+        elif R[1, 1] > R[2, 2]:
+            S = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2
+            qw, qx, qy, qz = (R[0, 2] - R[2, 0]) / S, (R[0, 1] + R[1, 0]) / S, 0.25 * S, (R[1, 2] + R[2, 1]) / S
+        else:
+            S = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2
+            qw, qx, qy, qz = (R[1, 0] - R[0, 1]) / S, (R[0, 2] + R[2, 0]) / S, (R[1, 2] + R[2, 1]) / S, 0.25 * S
+        return np.array([qw, qx, qy, qz])
 
     def reset(self):
         mujoco.mj_resetData(self.model, self.data)

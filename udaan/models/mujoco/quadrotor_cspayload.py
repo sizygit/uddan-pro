@@ -230,9 +230,9 @@ class QuadrotorCSPayload(base.QuadrotorCSPayload):
                 u_clamped = np.append(thrust, torque)
             # set control and step simulation
             self._mjMdl.data.ctrl[self._ctrl_index: self._ctrl_index + 4] = u_clamped
-            self._mjMdl._step_mujoco_simulation(self._nFrames)
+            self._mjMdl._step_mujoco_simulation(self._nFrames)  # 调用mujoco包的mujoco.mj_step()函数进行模型的数据更新
             # update state required to be in the loop for attitude control
-            self._query_latest_state()
+            self._query_latest_state()  # 更新飞行器和负载的状态
             # add tracking marker
             if self._mjMdl.render:
                 if (self._input_type == base.QuadrotorCSPayload.INPUT_TYPE.CMD_PROP_FORCES):
@@ -240,8 +240,8 @@ class QuadrotorCSPayload(base.QuadrotorCSPayload):
                         self._mjMdl.add_arrow_at(
                             self._mjMdl.data.site_xpos[i],  # position
                             self._mjMdl.data.site_xmat[i],  # rotation matrix
-                            s=[0.005, 0.005, 0.25 * float(u_clamped[i])],  # scale
-                            label="f%d" % i,  # label
+                            s=100*[0.005, 0.005, 0.25 * float(u_clamped[i])],  # scale
+                            label="_f%d" % i,  # label
                             color=[1.0, 1.0, 0.0, 1.0],  # color
                         )
         return
@@ -272,7 +272,7 @@ class QuadrotorCSPayload(base.QuadrotorCSPayload):
                 raise NotImplementedError("TODO: Implement")
                 u = self._prop_controller.compute(self.t, self.state)
             else:
-                u = self._payload_controller.compute(self.t, traj[k, :], self.state) # 计算控制输入
+                u = self._payload_controller.compute(self.t, traj[k, :], self.state)  # 计算控制输入
             self.step(u)  # 执行一步仿真
             timevals.append(self._mjMdl.data.time)
             quad_pos.append(self.state.position.copy())
@@ -344,7 +344,8 @@ class QuadrotorCSPayload(base.QuadrotorCSPayload):
         return
 
     def _query_latest_state(self):
-        """ NOTE: it is very important to copy the data from mujoco data"""
+        """ NOTE: it is very important to copy the data from mujoco data,update
+        self. state form mujoco data"""
         # ------------------------------------------------------------
         if self._model_type == self.MODEL_TYPE.TENDON:
             self.__query_state_tendon_model()

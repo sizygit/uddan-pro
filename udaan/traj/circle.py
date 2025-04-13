@@ -32,5 +32,5 @@ traj[:,8] = 0
 traj[:,9] = np.arctan2(np.sin(t*v/r),np.cos(t*v/r))
 
 # write to txt
-np.savetxt(output_path,traj,fmt='%f')
+np.savetxt(output_path,traj,fmt='%_f')
 print("circle.txt updated!")

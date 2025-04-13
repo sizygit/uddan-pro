@@ -30,5 +30,5 @@ for i in range(1,cycles+1):
 traj[-1,0:np.size(points_matrix,1)] = traj[-2,0:np.size(points_matrix,1)]
 
 # Write to txt
-np.savetxt(output_path,traj,fmt='%f')
+np.savetxt(output_path,traj,fmt='%_f')
 print("points.txt updated!")
