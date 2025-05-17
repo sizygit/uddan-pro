@@ -65,7 +65,6 @@ class MulitQuadCS(base.BaseModel):
             self.load_vel = np.zeros(3)
             self.load_acc = np.zeros(3)
 
-
         def reset(self):
             for quad in self.quads:
                 quad.reset()
@@ -89,12 +88,12 @@ class MulitQuadCS(base.BaseModel):
         self.eso = [ExtendedStateObserver(paraStruct.quad_poso[j], [0., 0., 0.],
                                           # [0.] * 3, [0.] * 3, [0.] * 3, [0.] * 3, [0.] * 3, [0.] * 3,
                                           [1.7, 1.7, 5.], [1.7, 1.7, 3.], [12., 12., 20.],  # 32
-                                          [1.6, 1.6, 1], [1., 1.7, 2.0], [10., 10., 14.], # [1.6, 1.6, 0.2], [1., 1.7, 2.0], [10., 10., 10.],
+                                          [1.6, 1.6, 1], [1., 1.7, 2.0], [10., 10., 14.],
+                                          # [1.6, 1.6, 0.2], [1., 1.7, 2.0], [10., 10., 10.],
                                           0.5, 0.1)
                     for j in range(paraStruct.n)]  # init extern state observer
-        self.so3Ctl = [CascadeAttitudeCtl([2.1, 2.1, 2.1], [1.7, 1.7, 1.3],
-                                          np.diag(paraStruct.diaginertia) @ [0.3, 0.3, 0.3],
-                                          np.diag(paraStruct.diaginertia) @ [0.01, 0.01, 0.01],
+        self.so3Ctl = [CascadeAttitudeCtl(paraStruct.so3Kp1, paraStruct.so3Kd1,
+                                          paraStruct.so3Kp2, paraStruct.so3Ki2,
                                           np.diag(paraStruct.diaginertia)) for _ in range(paraStruct.n)]
         self.Flift_vec_store = np.zeros(3 * self.nQ)
         self.mj_dt = paraStruct.dt
@@ -179,15 +178,17 @@ class MulitQuadCS(base.BaseModel):
                                                                                      3])
             self.state.quads[i].angular_velocity = copy.deepcopy(self._mjMdl.data.qvel[6 * i +
                                                                                        3:6 * i + 6])
-            self.state.quads[i].acc = copy.deepcopy(self._mjMdl.data.sensordata[4+i*3 : 4+i*3+3])
+            self.state.quads[i].acc = copy.deepcopy(self.state.quads[i].rotation @ (
+                        self._mjMdl.data.sensordata[4 + i * 3: 4 + i * 3 + 3] - np.array([0, 0, self._g])))
+            print(f"q{i} real_acc:{self.state.quads[i].acc}")
         self.state.load_pos = copy.deepcopy(self._mjMdl.data.qpos[7 * self.nQ:
                                                                   7 * self.nQ + 3])
         self.state.load_vel = copy.deepcopy(self._mjMdl.data.qvel[6 * self.nQ:
                                                                   6 * self.nQ + 3])
-        self.state.load_acc = copy.deepcopy(self._mjMdl.data.sensordata[4+3 * self.nQ :4+3 * self.nQ +3])
+        self.state.load_acc = copy.deepcopy(self._mjMdl.data.sensordata[4 + 3 * self.nQ:4 + 3 * self.nQ + 3])
         for i in range(self.nQ):
             # T = |T| .* q  q: unit vector load -> quad
-            p =  self.state.quads[i].position - self.state.load_pos
+            p = self.state.quads[i].position - self.state.load_pos
             self.state.cables[i].length = np.linalg.norm(p)
             self.state.cables[i].q = p / self.state.cables[i].length
             self.state.cables[i].dq = (self.state.load_vel -
@@ -223,14 +224,12 @@ class MulitQuadCS(base.BaseModel):
             # print(_f'ex:{ex}  exp_f:{Fpd - Disturbance_hat * self.mQ[i]}')
         return thrust_vec
 
-
-    def quad_position_control(self, posd_error, f_margin,fromationUsed=False):
+    def quad_position_control(self, posd_error, f_margin, fromationUsed=False,
+                              kp=np.array([3.6, 3.6, 10.1]), kd=np.array([5, 5, 5.9]),
+                              ki=np.array([0.08, 0.08, 0.08])):
         """quadrotor position control """
         thrust_vec = np.zeros(3 * self.nQ)
         for i in range(self.nQ):
-            kp = np.array([2.6, 2.6, 10.1])  #2.6 2.6 6.1
-            kd = np.array([5, 5, 5.9])  # 4, 4, 5.9
-            ki = np.array([1.8, 1.8, 1.8])
             if fromationUsed is True:
                 ex = posd_error[i, :]  # 提取期望位置误差
                 # ev = posd_error[i+4, :]  # 提取期望速度误差
@@ -245,7 +244,7 @@ class MulitQuadCS(base.BaseModel):
                 -100,
                 100
             )
-            Fpd = kp * ex + kd * ev #+ ki * self.state.quads[i].integral
+            Fpd = kp * ex + kd * ev  # + ki * self.state.quads[i].integral
             # print(f'q{i} integ: {self.state.quads[i].integral}')
             Fff = self.mQ[i] * (self._g * self._e3)
 
@@ -254,7 +253,8 @@ class MulitQuadCS(base.BaseModel):
                                                        A_nor,
                                                        dt=self.mj_dt)
             # print(_f'Disturbance_hat: {np.linalg.norm(Disturbance_hat):.2f}*{Disturbance_hat/np.linalg.norm(Disturbance_hat)}   q: {self.state.cables[0].q}')
-            tmp_F = Fpd + Fff + f_margin[i]  - Disturbance_hat * self.mQ[i]
+            tmp_F = Fpd + Fff + f_margin[i] - Disturbance_hat * self.mQ[i]
+            print(f'q{i} desF:{tmp_F}')
             # tmp_F = Fpd + Fff + f_margin[i] + self.state.cables[i].tension #TODO 用真实的拉力
             # tmp_F += 0.9 * self.state.cables[i].tension
             thrust_vec[3 * i:3 * i + 3] = tmp_F
@@ -312,7 +312,7 @@ class MulitQuadCS(base.BaseModel):
     def compute_attitude_control_cascade(self, thrust_force_all, k1=[12, 12, 3]):
         """ 1 ： SO3 controller"""
         u_vec = np.zeros(4 * self.nQ)  # _f tau1 tau2 tau3
-        angle_vec  = np.zeros([self.nQ, 6])
+        angle_vec = np.zeros([self.nQ, 6])
         for i in range(self.nQ):
             thrust_force = thrust_force_all[3 * i:3 * i + 3]
             norm_thrust = np.linalg.norm(thrust_force)  # norm of thrust force
@@ -331,8 +331,8 @@ class MulitQuadCS(base.BaseModel):
             # Rd = self.limit_euler_angles(Rd, 35)  # 限制欧拉角
             Omega = self.state.quads[i].angular_velocity
             Re = Rd @ R.T
-            angle_vec[i, :] = np.hstack([self.rot_to_euler(R), self.rot_to_euler(Rd)])  # 姿态角误差：deg
-            M = self.so3Ctl[i].cal_control_torque(Re, Omega, self.mj_dt)
+            angle_vec[i, :] = np.hstack([self.rot_to_euler(R), self.rot_to_euler(Rd)])  # 姿态角：deg
+            M = self.so3Ctl[i].cal_control_torque(Re, Omega, self.mj_dt, k1=[26, 26, 3])
             f = thrust_force.dot(R[:, 2])  # 推力向量在机体坐标系的z轴方向分量
             u_clamped = np.clip(np.hstack([f, M]), self._feasible_min_input[4 * i:4 * i + 4],
                                 self._feasible_max_input[4 * i:4 * i + 4])
@@ -433,7 +433,6 @@ class MulitQuadCS(base.BaseModel):
         return np.degrees(phi), np.degrees(theta), np.degrees(psi)
 
 
-
 class DirectionAwareController:
     def __init__(self, n_drones):
         """
@@ -494,8 +493,6 @@ class DirectionAwareController:
             self.Kp_base = Kp_base
         if eta is not None:
             self.eta = eta
-
-
 
 
 class LoadCentricController:
@@ -569,4 +566,3 @@ class LoadCentricController:
         #         body_torques[i, :2] = [-F_vectors[i, 1], F_vectors[i, 0]]
 
         return F_vectors
-
