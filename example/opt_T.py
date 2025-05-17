@@ -37,6 +37,15 @@ class ParaStruct:
         # self.A = np.zeros((self.n, self.n))  0.4
         self.B = 0.6 * np.array([1] * self.n)  #TODO: 协同误差还是单体误差  0.5
 
+        self.posKp = np.array([3.6, 3.6, 18.1])  #2.6 2.6 6.1
+        self.posKd = np.array([5, 5, 8.9])  # 4, 4, 5.9
+        self.posKi = np.array([0.08, 0.08, 0.08])
+
+        self.so3Kp1 = np.array([2.1, 2.1, 2.1])
+        self.so3Kd1 = np.array([1.7, 1.7, 1.3])
+        self.so3Kp2 = np.diag(self.diaginertia) @ [0.3, 0.3, 0.3]
+        self.so3Ki2 = np.diag(self.diaginertia) @ [0.01, 0.01, 0.01]
+
 
 para = ParaStruct()
 waypoints = np.array([
@@ -53,7 +62,7 @@ traj_gen.coeffs = np.load('traj3.npy')
 model_path = f'./generate{para.n}.xml'
 mdl = MulitQuadCS(para, num_quad=para.n, model_xml_path=model_path,
                   render=False)
-sim_T = 10
+sim_T = 12
 if mdl.render:
     start_t = time.time_ns()
     cam = mdl._mjMdl.viewer.cam
@@ -76,14 +85,16 @@ store_t_force_list = [0] * para.n  # 保存拉力模长的列表
 store_theta_list = np.zeros((1, para.n))  # 保存俯仰角度的列表
 store_theta_des_list = np.zeros((1, para.n))  # 保存期望俯仰角度的列表
 store_phi_list= np.zeros((1, para.n))  # 保存偏航角度的列表
+store_norm_tension_list = np.zeros((1, para.n))
 store_t_list = [0]
 
 import MPC_base as _mpc
-loadctl = _mpc.mpcPosctl(15,0.1,
+loadctl = _mpc.mpcPosctl(15,0.4,
           Q=np.diag([50, 50, 50, 1, 1, 1]),
-          R=np.diag([0.3, 0.3, 0.3]),
+          R=np.diag([0.5, 0.5, 0.5]),
           S=np.diag([0.3, 0.3, 0.3]))
 thetactl = LoadCentricController(para.n, para.l)
+mdl._query_latest_state()
 
 """" 仿真步进部分  """
 while mdl.t < sim_T:
@@ -130,14 +141,19 @@ while mdl.t < sim_T:
         theta_d = np.deg2rad([70, 70, 70, 70])  # 起飞时先固定队形
     else:
         theta_d = theta_sequen[0]
-    # pos_load_d = np.array([0, 0, 2.5])  # todo: test 飞一个点
+    # pos_load_d =(mdl.t<3) * np.array([0, 0, 2.5]) +   (mdl.t>=3) * np.array([3, 3, 2.5])# todo: test 飞一个点
     # theta_d = np.deg2rad([70, 70, 70, 70])  # todo: test 先保持固定队形测试
     store_theta_des_list = np.append(store_theta_des_list, theta_d.reshape(-1, 4), axis=0)
+    theta_cur, phi_cu = oT.Cart2Spher_qunit([mdl.state.cables[j].q for j in range(para.n)]) #mdl.state.load_pos_est)
+    store_theta_list = np.append(store_theta_list, theta_cur.reshape(-1, 4), axis=0)
     # theta, phi = oT.update_opt_phi_theta(para.n, acc_L, para.m_load)
 
     # pos_d = pos_load_d + [0,0, para.l] # single quad
     pos_d = oT.cal_quadpose(pos_load_d, theta_d, phi, para.n, para.l)
-    formation_pos_error = oT.calError_Form(para.A, para.B, pos_load_d, pos_mat, theta_d, phi, para.l,
+    # alpha = np.clip(np.linalg.norm(theta_d - theta_cur, 1) % 1.4,0,0.5)
+    # pos_load_filered = (1.0 - alpha) * pos_load_d +  (alpha)* load_pos_est
+    pos_load_filered = pos_load_d
+    formation_pos_error = oT.calError_Form(para.A, para.B, pos_load_filered, pos_mat, theta_d, phi, para.l,
                                            para.n)  # 根据载荷位置计算编队协同位置误差
     formation_vel_error = oT.caldError_Form(para.A, para.B, vel_mat)  # 计算编队协同速度误差
     formation_error = np.vstack([formation_pos_error, formation_vel_error])  # 将位置误差和速度误差纵向堆叠
@@ -153,16 +169,21 @@ while mdl.t < sim_T:
     store_t_list = np.append(store_t_list, mdl.t)
     store_load_list = np.append(store_load_list, mdl.state.load_pos.reshape(-1, 3), axis=0)  # 保存载荷位置
     store_loadvel_list = np.append(store_loadvel_list, mdl.state.load_vel.reshape(-1, 3), axis=0)  # 保存载荷速度
-    theta_cur, phi_cu = oT.Cart2Spher_qunit([mdl.state.cables[j].q for j in range(para.n)]) #mdl.state.load_pos_est)
-    store_theta_list = np.append(store_theta_list, theta_cur.reshape(-1, 4), axis=0)
+
+    D = oT.compute_D(theta_d.reshape(-1, 4), phi)
+    acc_cal = (store_loadvel_list[-1] -  store_loadvel_list[-2]) / para.dt
+    store_norm_tension = oT.phi_theta2_tension(D, acc_cal, 9.81, para.m_load)
+    store_norm_tension_list = np.append(store_norm_tension_list, store_norm_tension.reshape(-1, 4), axis=0)
     # store_error_list = np.append(store_error_list, formation_error[0:para.n:], axis=0)
 
     ################ control loop   ################
-    mdl._query_latest_state()
     # f_theta = thetactl.compute_f(theta_d, theta_cur, 0.02)  # 计算俯仰角补偿力
 
     t_margin = 0.3 * para.m_load * oT.cal_quadpose([0, 0, 0], theta_d, phi, para.n, 1)  # 期望构型的单位向量D
-    thrust_vec = mdl.quad_position_control(formation_error, 0*t_margin.reshape(-1), fromationUsed=True)  # 计算期望位置控制得到的推力
+    t_compensite = np.array([para.m_quad, para.m_quad, 0]) * np.tile(acc_L[0], (para.n, 1))
+
+    thrust_vec = mdl.quad_position_control(formation_error, 0*t_compensite, fromationUsed=True,
+                                           kp=para.posKp, kd=para.posKd, ki=para.posKi)  # 计算期望位置控制得到的推力
     # thrust_vec += f_theta.reshape(-1)  #TODO 加入俯仰角补偿力
     # thrust_vec = mdl.quad_position_control([pos_d], 0*t_margin.reshape(-1), fromationUsed=False)  # 单无人机测试
 
@@ -170,7 +191,6 @@ while mdl.t < sim_T:
     # print(f"angle_vec(deg): {angle_vec}")
     mdl.step_data(u)  # MulitQuadCS类里面自定义的步进函数
     print(f"step {step}, time {mdl.t} \n")
-    # print(f'fd_acc : {mdl._mjMdl.data.sensordata[4:]}')
 
     store_u_list = np.append(store_u_list, u.reshape(-1, 4), axis=0)  # 保存实际位置
     store_ang_list = np.append(store_ang_list, angle_vec.reshape(-1, 6), axis=0)  # 保存姿态角信息
@@ -192,20 +212,29 @@ while mdl.t < sim_T:
 # 绘制拉力变化曲线  ori-0.398
 figs_tension = plot_tension_curve(store_t_list, store_t_force_list, store_tension_vec_list,
                                   mdl.eso, para, detail=False)
+# 绘制标称拉力曲线
+plot_normtension_curve(store_t_list, store_norm_tension_list, para)
 
 # 绘制控制输入对应的能耗曲线
-energies, P_total_multi = calculate_power_and_energy_multi_drones(store_u_list, para.n, len(store_t_list), 0.02)
-plot_power_and_energy_curves(store_t_list, P_total_multi,0.02)
+# energies, P_total_multi = calculate_power_and_energy_multi_drones(store_u_list, para.n, len(store_t_list), 0.02)
+# plot_power_and_energy_curves(store_t_list, P_total_multi,0.02)
 # 创建俯仰角度和期望俯仰角度的图形
 fig0 = plot_theta_curve(store_t_list, store_theta_list, store_theta_des_list, para)
 # 绘制三维轨迹
 # fig3d, ax3d = plot_3d_trajectory(store_posd_list, store_pos_list,store_load_list, para)
 
+# 绘制多项式轨迹以及实际载荷轨迹
+ax_load = traj_gen.plot_trajectory()
+ax_load.plot(store_load_list[:, 0], store_load_list[:, 1], store_load_list[:, 2], label='pos_load')
+ax_load.legend()
+ax_load.set_zlim(0, 3)
+ax_load.grid(True)
+
 # 绘制位置变化曲线
 figs_pos = plot_position_curves(store_t_list, store_posd_list, store_pos_list,para)
 
 # 绘制姿态角度变化曲线
-# figs_angle = plot_angle_curves(store_t_list, store_ang_list, para)
+figs_angle = plot_angle_curves(store_t_list, store_ang_list, para)
 
 # 绘制误差变化曲线
 # error_figs = plot_error_curves(store_t_list, store_error_list, para)

@@ -95,18 +95,21 @@ class MinimumSnapTrajectory:
             return prev_val - curr_val  # 约束差值应为0
         return constraint
 
-    def _eval_derivative(self, coeffs, deriv, t):
-        """ 支持处理一维（单维度）或二维（多维度）系数数组 """
+    def _eval_derivative(self, coeffs, deriv, t_norm):
+        """ 支持处理一维（单维度）或二维（多维度）系数数组  计算归一化时间下的导数，并转换为实际时间的物理量"""
         if coeffs.ndim == 1:
             # 单一维度处理
             d_coeffs = np.polyder(coeffs, deriv)
-            return np.polyval(d_coeffs, t)
+            value = np.polyval(d_coeffs, t_norm)
+            scaling_factor = (1.0 / self.t_sum) ** deriv
+            return value * scaling_factor
         else:
             # 多维度处理
             values = []
             for dim in range(coeffs.shape[1]):
                 d_coeffs = np.polyder(coeffs[:, dim], deriv)
-                values.append(np.polyval(d_coeffs, t))
+                value = np.polyval(d_coeffs, t_norm)
+                values.append((1.0 / self.t_sum) ** deriv * value)
             return np.array(values)
 
     def _integrate_square(self, coeffs, T):
@@ -159,7 +162,8 @@ class MinimumSnapTrajectory:
 
         trajectory = np.array(trajectory)
 
-        plt.figure(figsize=(10, 6))
+        # plt.figure(figsize=(10, 6))
+        fig = plt.figure(figsize=(10, 6))
         if self.dim == 2:
             plt.plot(self.waypoints[:, 0], self.waypoints[:, 1], 'ro', label='waypoints', markersize=8)
             plt.plot(trajectory[:, 0], trajectory[:, 1], 'b-', label='trajectory')
@@ -176,6 +180,7 @@ class MinimumSnapTrajectory:
             if z_max - z_min < 0.1:
                 z_center = (z_max + z_min) / 2
                 ax.set_zlim(z_center - 0.05, z_center + 0.05)
+        return ax
 
     def _build_constraints(self):
         """ 构造约束条件 航路点位置约束、中间点max_cont_deriv阶连续约束、起点终点零速度加速度约束"""
@@ -299,7 +304,7 @@ class MinimumSnapTrajectory:
 
     def cal_time_alloc(self, waypoints, average_speed):
         """
-        根据航路点和平均速度计算时间节点
+        根据航路点和平均速度计算时间节点,根据各轴速度计算时间节点，取最慢轴的时间
         参数:
         waypoints : np.array (N, 3) - 航路点坐标 (x, y, z)
         average_speed : np.array (3,) - 平均速度向量 (vx, vy, vz)
@@ -307,17 +312,17 @@ class MinimumSnapTrajectory:
         time_nodes : np.array - 时间节点数组
         """
         # 计算速度的模长
-        speed_magnitude = np.linalg.norm(average_speed)
-        if speed_magnitude == 0:
-            raise ValueError("平均速度不能为零向量")
-        # 计算航路点之间的距离
-        distances = np.linalg.norm(np.diff(waypoints, axis=0), axis=1)  # 计算相邻航路点之间的距离
-        # 计算每段的时间
-        times = distances / speed_magnitude  # 每段的时间
-        # 计算时间节点，起始时间为0
-        time_nodes = np.zeros(len(times) + 1)  # 包含起始点
-        time_nodes[1:] = np.cumsum(times)  # 使用cumsum进行累加
-        return time_nodes
+        time_nodes = [0.0]
+        for i in range(len(waypoints) - 1):
+            delta = waypoints[i + 1] - waypoints[i]
+            time_per_axis = [
+                abs(delta[dim]) / speed
+                for dim, speed in enumerate(average_speed)
+                if speed > 0
+            ]
+            t_segment = max(time_per_axis)  # 取最慢轴的时间
+            time_nodes.append(time_nodes[-1] + t_segment)
+        return np.array(time_nodes)
 
 
 # 使用示例
@@ -358,7 +363,7 @@ if __name__ == "__main__":
         _deriv = 0
         end_vel = traj_gen._eval_derivative(coeffs[-1, :, :], _deriv, traj_gen.time_alloc[-1] - traj_gen.time_alloc[-2])
         print(f"终点{_deriv}阶状态:{end_vel}")
-        p = traj_gen.cal_trajectory_order(5, 2)
+        p = traj_gen.cal_trajectory_order(2, 2)
         print(p)
         plt.show()
     except RuntimeError as e:

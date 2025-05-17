@@ -136,6 +136,8 @@ def update_opt_phi_theta(n, a_vec, ml):
         return calGradient(theta, phi0,D, F, n)
     # 进行优化
     bounds = [(np.deg2rad(25), np.deg2rad(70)) for _ in range(n)]
+    # bounds[2] = (bounds[2][0], np.deg2rad(80))
+    # bounds = optimize_upper_bounds(np.array(a_vec).reshape(1, -1), phi0)
     theta_opt = minimize(func, theta0, jac=gradient,
                          bounds=bounds, method='L-BFGS-B') # L-BFGS-B比 trust-constr更快
     end_time = time.time()
@@ -164,7 +166,7 @@ def global_optimize_theta_sequence(n, a_sequence, ml):
 
     # 初始猜测：所有时间步的theta初始化为70度
     theta0_global = np.deg2rad(70) * np.ones(T * n)
-    lambda1 = 2.8
+    lambda1 = 3.1
     lambda2 = 0.05
 
     # 定义全局代价函数和梯度
@@ -217,7 +219,8 @@ def global_optimize_theta_sequence(n, a_sequence, ml):
         return grad
 
     # 定义变量边界（所有时间步的theta均需满足[25°,70°]）
-    bounds = [(np.deg2rad(25), np.deg2rad(70)) for _ in range(T * n)]
+    bounds = optimize_upper_bounds(a_sequence, phi0) #FIXME:效果变差，拉力差更大
+    # bounds = [(np.deg2rad(25), np.deg2rad(70)) for _ in range(T * n)]
     # 全局优化
     result = minimize(
         global_func,
@@ -238,6 +241,47 @@ def global_optimize_theta_sequence(n, a_sequence, ml):
     # print(f"加速度序列: {a_sequence}")
     # print(f"优化后的俯仰角序列（角度制）: {np.rad2deg(theta_sequence)}")
     return theta_sequence, phi0
+
+
+def optimize_upper_bounds(a_sequence, phi0):
+    """
+    动态调整无人机角度优化变量的上界 保持顺序结构的向量化版本
+    :param a_sequence: 加速度序列 (T, 3)
+    :param phi0: 无人机初始水平夹角 (n,)
+    :return: 调整后的上下界列表 [(lower, upper), ...]
+    输出顺序：[(t0_uav0), (t0_uav1)...(t0_uavn), (t1_uav0)...]
+    """
+    T, _ = a_sequence.shape
+    n = len(phi0)
+
+    # 预计算方向向量 (n,2)
+    uav_dirs = np.column_stack([np.cos(phi0), np.sin(phi0)])
+
+    # 计算加速度方向 (T,2)
+    a_horizontal = a_sequence[:, :2]
+    a_norms = np.linalg.norm(a_horizontal, axis=1, keepdims=True)
+    zero_acc_mask = a_norms.squeeze() < 1e-6
+    a_dirs = np.divide(a_horizontal, a_norms, where=~zero_acc_mask[:, None])
+
+    # 计算夹角矩阵 (T,n)
+    cos_theta = np.einsum('td,nd->tn', a_dirs, uav_dirs)  # 保持t维度在前
+    theta_deg = np.degrees(np.arccos(np.clip(cos_theta, -1, 1)))
+
+    # 非线性上界计算（二次函数）
+    angle_crisis = 90
+    delta = np.clip(theta_deg - angle_crisis, 0, 180 - angle_crisis)  # 限制delta范围
+    nonlinear_factor = (delta ** 2) * 10 / (angle_crisis ** 2)  # 二次增长因子
+    upper = 70 + nonlinear_factor
+    upper = np.minimum(upper, 80)  # 确保不超过80
+    upper[zero_acc_mask, :] = 70  # 处理零加速度情况
+
+    # 按时间步优先顺序展平
+    upper_flat = upper.reshape(-1)  # 默认C顺序：t0_uav0, t0_uav1...t1_uav0...
+    # 生成最终边界列表
+    lower = np.deg2rad(25)
+    bounds = [(lower, np.deg2rad(u)) for u in upper_flat]
+
+    return bounds
 
 def cal_quadpose(load_pos, theta_list, phi_list, n, L):
     """根据载荷位置以及两个角度计算四轴的位置 n个行向量
@@ -284,11 +328,11 @@ def demo_global():
     n = 4
     a_sequence = np.array([
         [1, 0, 0],
-        [1, 1, 1],
-        [1, 1, 1],
-        [1, 0, 0],
-        [0, 0, 0],
-        [0, 0, 0],
+        # [1, 1, 1],
+        # [1, 1, 1],
+        # [1, 0, 0],
+        # [0, 0, 0],
+        # [0, 0, 0],
     ])
     T = len(a_sequence)
     ml = 1
@@ -296,6 +340,7 @@ def demo_global():
     print("-------------" * 5)
     print(f"进行全局优化，无人机数量: {n}, 离散时间步数: {T}")
     theta_sequence, phi0 = global_optimize_theta_sequence(n, a_sequence, ml)
+    print(f'theta_opt(deg): {np.rad2deg(theta_sequence)}')
     print("-------------"*5)
 
 def fit_circle(points):
@@ -382,8 +427,10 @@ if __name__ == '__main__':
     # [1.18367421e+00 4.07287754e-02 3.41368272e+01]
     # [3.00013307e+00 2.25154864e-02 2.17705628e+01]
     import matplotlib.pyplot as plt
-    a_vec = np.array([[9.99999586, 9.99999975, 9.54623434],[3.00013307e+00 ,2.25154864e-02 ,2.17705628e+01]])
-    a_vec = limit_vector_magnitude(a_vec, 5.0)
+    a_vec = np.array([[2, 0, 9.8],
+                      [9.99999586, 9.99999975, 9.54623434],
+                      [3.00013307e+00 ,2.25154864e-02 ,2.17705628e+01]])
+    # a_vec = limit_vector_magnitude(a_vec, 5.0)
     a_vec = a_vec[0]
     n = 4
     ml = 1
@@ -396,7 +443,7 @@ if __name__ == '__main__':
     t_vec = phi_theta2_tension(D, a_vec, 9.81, ml)
     print(f'acc: {a_vec}')
     print(f"opt tension: {t_vec}")  # 优化后的拉力分配
-    theta_ori =  np.deg2rad([70, 70, 70, 70])  # [70] * 4
+    theta_ori =  np.deg2rad([62, 70, 70, 70])  # [70] * 4
     D_ori = np.array([Spher2Cart_unit(theta_ori[i], phi[i]) for i in range(n)]).T  # calculate D
     t_ori = phi_theta2_tension(D_ori, a_vec, 9.81, ml)
     print(f"original tension: {t_ori}")

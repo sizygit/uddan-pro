@@ -1,5 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from opt_Tension import compute_D,phi_theta2_tension
+
 __all__ = [
     "calculate_power_and_energy_multi_drones",
     "plot_power_and_energy_curves",
@@ -9,7 +11,8 @@ __all__ = [
     "plot_3d_trajectory",
     "plot_tension_curve",
     "plot_theta_curve",
-    "plot_angle_curves"
+    "plot_angle_curves",
+    "plot_normtension_curve"
 ]
 
 
@@ -153,6 +156,12 @@ def plot_position_curves(store_t_list, store_posd_list, store_pos_list, para):
         ax1[2].grid(True)
         fig1.suptitle(f'Position Quadrotors {j}')
         ax1[2].set_xlabel('Time Step')
+        # Ensure y-axis range is at least 0.1
+        for ax_idx in range(3):
+            y_min, y_max = ax1[ax_idx].get_ylim()
+            if y_max - y_min < 0.1:
+                y_center = (y_max + y_min) / 2
+                ax1[ax_idx].set_ylim(y_center - 0.05, y_center + 0.05)
         figs.append(fig1)  # 将每个子图添加到列表中
     return figs
 
@@ -181,12 +190,13 @@ def plot_error_curves(store_t_list, store_error_list, para):
     return figs
 
 
-def plot_3d_trajectory(store_posd_list, store_pos_list, store_load_list, para):
+def plot_3d_trajectory(store_posd_list, store_pos_list, store_load_list, para, posd_detail=False):
     fig3d = plt.figure()
     ax3d = fig3d.add_subplot(111, projection='3d')
     for j in range(para.n):
-        ax3d.plot(store_posd_list[j::para.n, 0], store_posd_list[j::para.n, 1], store_posd_list[j::para.n, 2],
-                label=f'posd_{j}',linestyle='--')
+        if posd_detail is True:
+            ax3d.plot(store_posd_list[j::para.n, 0], store_posd_list[j::para.n, 1], store_posd_list[j::para.n, 2],
+                    label=f'posd_{j}',linestyle='--')
         ax3d.plot(store_pos_list[j::para.n, 0], store_pos_list[j::para.n, 1], store_pos_list[j::para.n, 2],
                 label=f'pos_{j}')
     ax3d.plot(store_load_list[:, 0], store_load_list[:, 1], store_load_list[:, 2], label='pos_load')
@@ -237,6 +247,20 @@ def plot_tension_curve(store_t_list, store_t_force_list, store_tension_vec_list,
     figs.append(fig)  # 将图形添加到列表中
     return figs
 
+
+def plot_normtension_curve(store_t_list, store_norm_tension_list, para):
+    figs = []
+    fig, ax1 = plt.subplots()
+    for j in range(para.n):
+        ax1.plot(store_t_list, store_norm_tension_list[:,j], label=f'Tension_norm_{j}', linestyle='--')
+    ax1.set_xlabel('Time')
+    ax1.set_ylabel('Tension Force')
+    ax1.set_title(f'Norm Tension Force vs Time')
+    ax1.grid(True)
+    ax1.legend()
+    return figs.append(fig)
+
+
 def plot_theta_curve(store_t_list, store_theta_list, store_theta_des_list, para):
     figs = []
     fig4, ax4 = plt.subplots()
@@ -249,6 +273,8 @@ def plot_theta_curve(store_t_list, store_theta_list, store_theta_des_list, para)
     ax4.set_title(f'Theta vs Time')
     ax4.grid(True)
     ax4.legend()
+
+
     figs.append(fig4)  # 将图形添加到列表中
     return figs
 
@@ -263,17 +289,17 @@ def plot_angle_curves(store_t_list, store_ang_list, para):
         # 绘制三个子图
         ax[0].plot(store_t_list, drone_data[:, 0], 'b', label='Actual Roll')
         ax[0].plot(store_t_list, drone_data[:, 3], 'r--', label='Desired Roll')
-        ax[0].set_ylabel('Roll (rad)')
+        ax[0].set_ylabel('Roll (deg)')
         ax[0].legend()
         ax[0].grid(True)
         ax[1].plot(store_t_list, drone_data[:, 1], 'b', label='Actual Pitch')
         ax[1].plot(store_t_list, drone_data[:, 4], 'r--', label='Desired Pitch')
-        ax[1].set_ylabel('Pitch (rad)')
+        ax[1].set_ylabel('Pitch (deg)')
         ax[1].legend()
         ax[1].grid(True)
         ax[2].plot(store_t_list, drone_data[:, 2], 'b', label='Actual Yaw')
         ax[2].plot(store_t_list, drone_data[:, 5], 'r--', label='Desired Yaw')
-        ax[2].set_ylabel('Yaw (rad)')
+        ax[2].set_ylabel('Yaw (deg)')
         ax[2].set_xlabel('Time')
         ax[2].legend()
         ax[2].grid(True)

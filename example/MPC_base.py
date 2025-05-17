@@ -112,7 +112,8 @@ class mpcPosctl():
         self._disturbance = P[-self._u_dim:] # measured disturbance
         X[:, 0] = P[:self._s_dim]  # initial condition
         for j in range(self._N):
-            X[:, j+1] = F(X[:, j], U[:, j] + [0, 0, self._gz], self._disturbance)  # RK4-integration
+            # X[:, j+1] = F(X[:, j], U[:, j] + [0, 0, self._gz], self._disturbance)  # RK4-integration
+            X[:, j + 1] = F(X[:, j], U[:, j], self._disturbance)  # RK4-integration
         # X[:, 1:] =fMap(X[:, :self._N], U)  map是并行计算的，会损失每一列之间的逻辑关系
 
         self.nlp_x = ca.reshape(U, -1, 1)  # nlp variables
@@ -211,7 +212,8 @@ class mpcPosctl():
         #
         sol_x0 = self.sol['x'].full()  # full() get a array
         opt_u = sol_x0.reshape(-1, self._u_dim) # row vector is a input
-        opt_u +=  [0, 0, self._gz]
+        #FIXME:?????? Z控制量老为定值
+        # opt_u +=  [0, 0, self._gz]
         # Warm initialization
         self.nlp_x0 = sol_x0
         # x0_array = np.reshape(sol_x0[:-self._s_dim], newshape=(-1, self._s_dim + self._u_dim))
@@ -256,6 +258,13 @@ def generate_pos_vel_mpc(t, N, dt, cur_p, cur_v, t2vel, t2pos):
 
 
 if  __name__ == "__main__":
-    s= mpcPosctl(10, 0.1, S=np.diag([0, 0, 0]))
-    s.solve([0,0,0,0,0,0] + [1,1,1,0,0,0] * 10)
+    # s= mpcPosctl(10, 0.1, S=np.diag([0, 0, 0]))
+    # s.solve([0,0,0,0,0,0] + [1,1,1,0,0,0] * 10)
     # s.solve([0, 0, 0, 0, 0, 0] + [2, 2, 2, 0, 0, 0] * 10)
+
+    temp = mpcPosctl(2, 0.1, S=np.diag([0, 0, 0]))
+    ref = np.array([ 0.75604862 ,-0.01457808 , 1.98391634 , 0.48314085 ,-0.02969889  ,0.0,
+            2.4832781  ,-0.06157046 , 2.         , 1.18851701 , 0.02818885 , 0.,
+            2.91289846 ,-0.02129768 , 2.         , 0.91992865 , 0.18702312 , 0.])
+    result = temp.solve(ref)
+    print(result)
