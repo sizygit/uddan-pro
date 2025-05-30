@@ -1,15 +1,16 @@
 scipy
+scikit-learn
 numpy
 matplotlib
 vpython
 https://github.com/crossbario/autobahn-python/archive/master.zip
-pybullet
-# casadi
+pybullet # ?
+casadi
 # slycot  
-control
+control # ?
 pyyaml
 mujoco==2.3.7
 mujoco-python-viewer
-gym==0.26.2
-tqdm
-seaborn
+gym==0.26.2 # ?
+tqdm # ?
+seaborn # ?

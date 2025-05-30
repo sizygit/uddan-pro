@@ -180,12 +180,12 @@ class MulitQuadCS(base.BaseModel):
                                                                                        3:6 * i + 6])
             self.state.quads[i].acc = copy.deepcopy(self.state.quads[i].rotation @ (
                         self._mjMdl.data.sensordata[4 + i * 3: 4 + i * 3 + 3] - np.array([0, 0, self._g])))
-            print(f"q{i} real_acc:{self.state.quads[i].acc}")
+            # print(f"q{i} real_acc:{self.state.quads[i].acc}")  # FIXME: 加速度不准确，坐标转换问题？
         self.state.load_pos = copy.deepcopy(self._mjMdl.data.qpos[7 * self.nQ:
                                                                   7 * self.nQ + 3])
         self.state.load_vel = copy.deepcopy(self._mjMdl.data.qvel[6 * self.nQ:
                                                                   6 * self.nQ + 3])
-        self.state.load_acc = copy.deepcopy(self._mjMdl.data.sensordata[4 + 3 * self.nQ:4 + 3 * self.nQ + 3])
+        self.state.load_acc = copy.deepcopy(self._mjMdl.data.sensordata[4 + 3 * self.nQ:4 + 3 * self.nQ + 3] - np.array([0, 0, self._g]))
         for i in range(self.nQ):
             # T = |T| .* q  q: unit vector load -> quad
             p = self.state.quads[i].position - self.state.load_pos
@@ -254,7 +254,7 @@ class MulitQuadCS(base.BaseModel):
                                                        dt=self.mj_dt)
             # print(_f'Disturbance_hat: {np.linalg.norm(Disturbance_hat):.2f}*{Disturbance_hat/np.linalg.norm(Disturbance_hat)}   q: {self.state.cables[0].q}')
             tmp_F = Fpd + Fff + f_margin[i] - Disturbance_hat * self.mQ[i]
-            print(f'q{i} desF:{tmp_F}')
+            # print(f'ctl q{i} desF:{tmp_F}')
             # tmp_F = Fpd + Fff + f_margin[i] + self.state.cables[i].tension #TODO 用真实的拉力
             # tmp_F += 0.9 * self.state.cables[i].tension
             thrust_vec[3 * i:3 * i + 3] = tmp_F
@@ -334,6 +334,7 @@ class MulitQuadCS(base.BaseModel):
             angle_vec[i, :] = np.hstack([self.rot_to_euler(R), self.rot_to_euler(Rd)])  # 姿态角：deg
             M = self.so3Ctl[i].cal_control_torque(Re, Omega, self.mj_dt, k1=[26, 26, 3])
             f = thrust_force.dot(R[:, 2])  # 推力向量在机体坐标系的z轴方向分量
+            f = np.linalg.norm(thrust_force)
             u_clamped = np.clip(np.hstack([f, M]), self._feasible_min_input[4 * i:4 * i + 4],
                                 self._feasible_max_input[4 * i:4 * i + 4])
             u_vec[4 * i:4 * i + 4] = u_clamped

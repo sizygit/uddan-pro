@@ -26,7 +26,8 @@ def phi_theta2_tension(D, a_vec, g, ml):
         input:  D=[q_1, ..., q_n], a_vec, g=9.81
         output: t = [t_1, ..., t_n]^T"""
     D_pseudoInv = D.T @ np.linalg.inv(D @ D.T)
-    F_rope = ml * (a_vec + np.array([0, 0, g]))
+    # F_rope = ml * (a_vec + np.array([0, 0, g]))
+    F_rope = ml * a_vec # [0, 0, g]已包含在里面
     t_vec = D_pseudoInv @ ( F_rope)  # -1
     return t_vec
 
@@ -116,6 +117,51 @@ def calGradient(theta, phi, D, F,  n):
         grad[i] = 2 * (term1.item() - term2.item())
     return grad
 
+
+def calGradient_new(theta, phi, D, F, n):
+    """
+    计算最小化拉力离散方差的目标函数关于θ的梯度
+    目标函数: J(θ) = t^T P t，其中 t = D^T X, X = A^{-1} F, A = D D^T
+    P = I - (1/n) 1 1^T 为去均值投影矩阵
+    对于每个 θ_k, 梯度:
+    ∂J/∂θₖ = 2·t^T P [Eₖ^T X - D^T A⁻¹ (Eₖ D^T + D Eₖ^T) X]
+
+    参数:
+      theta (np.ndarray): 俯仰角数组 (n,)
+      phi (np.ndarray): 水平角数组 (n,)
+      D (np.ndarray): UAV 方向矩阵 (3 x n)
+      F (np.ndarray): 载荷系绳力 (3 x 1)
+      n (int): UAV 数量
+    返回:
+      grad (np.ndarray): 梯度向量 (n,)
+    """
+    A = D @ D.T + 1e-8 * np.eye(3)
+    X = np.linalg.solve(A, F)
+    t = D.T @ X  # 拉力向量 t, shape: (n,)
+    P = np.eye(n) - (1 / n) * np.ones((n, n))
+    grad = np.zeros(n)
+
+    for k in range(n):
+        # 计算 UAV_k 的方向导数，即 d d_k/ dθ_k
+        g_k = np.array([
+            -np.sin(theta[k]) * np.cos(phi[k]),
+            -np.sin(theta[k]) * np.sin(phi[k]),
+            np.cos(theta[k])
+        ]).reshape(-1, 1)  # (3,1)
+        # 构造 E_k, 只有第 k 列为 g_k，其余为 0, shape: (3, n)
+        E_k = np.zeros((3, n))
+        E_k[:, k] = g_k.flatten()
+        # 第一部分：E_k^T X, 得到 (n, ) 向量，其中只有第 k 分量非零
+        term1 = E_k.T @ X
+        # 第二部分：计算 (E_k D^T + D E_k^T)
+        B = E_k @ D.T + D @ E_k.T  # (3, 3)
+        term2 = D.T @ np.linalg.solve(A, B @ X)  # (n, )
+        # dt/dθ_k 的向量形式
+        dt_dtheta = term1 - term2  # (n, )
+        # 梯度分量
+        grad[k] = 2 * (t.T @ P @ dt_dtheta)
+    return grad
+
 def update_opt_phi_theta(n, a_vec, ml):
     """ input: theta, phi, a_vec, g
         output: opt_tension"""
@@ -123,17 +169,18 @@ def update_opt_phi_theta(n, a_vec, ml):
     # 初始猜测
     theta0 = np.deg2rad(70) * np.ones(n)  # 角度转换为弧度
     phi0 = np.linspace(0, 2 * np.pi, n, endpoint=False)  # 均匀分布的 phi 角
+    gamma =0
     def func(x):
         theta = x[0:n]
         D = np.array([Spher2Cart_unit(theta[i], phi0[i]) for i in range(n)]).T
         t_vec = phi_theta2_tension(D, a_vec, 9.81, ml)
-        return np.linalg.norm(t_vec) ** 2
+        return gamma * np.var(np.array(t_vec),ddof=n-1) + np.linalg.norm(t_vec) ** 2
 
     def gradient(x):
         theta = x[0:n]
         D = np.array([Spher2Cart_unit(theta[i], phi0[i]) for i in range(n)]).T
         F = ml * (a_vec + np.array([0, 0, 9.81]))
-        return calGradient(theta, phi0,D, F, n)
+        return gamma * calGradient_new(theta, phi0,D, F, n) +calGradient(theta, phi0,D, F, n)
     # 进行优化
     bounds = [(np.deg2rad(25), np.deg2rad(70)) for _ in range(n)]
     # bounds[2] = (bounds[2][0], np.deg2rad(80))
@@ -162,7 +209,8 @@ def global_optimize_theta_sequence(n, a_sequence, ml):
     # if n == 1 or 2:
     #     return [np.ones([T, n]) * np.deg2rad(70)], [0]  # for test
     start_time = time.time()
-    phi0 = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    phi0 = np.linspace(0, 2 * np.pi, n, endpoint=False) # 均匀分布的 phi 角
+    # phi0 = np.linspace(0.25 * np.pi, 1.75 * np.pi, n)  # 均匀分布的 phi 角 x型
 
     # 初始猜测：所有时间步的theta初始化为70度
     theta0_global = np.deg2rad(70) * np.ones(T * n)
@@ -179,7 +227,8 @@ def global_optimize_theta_sequence(n, a_sequence, ml):
         for t in range(T):
             D = compute_D(theta_sequence[t], phi0)
             t_vec = phi_theta2_tension(D, a_sequence[t], 9.81, ml)
-            cost += np.linalg.norm(t_vec) ** 2
+            cost += np.linalg.norm(t_vec) ** 2  # 拉力平方和
+            # cost  += np.var(np.array(t_vec))  # 拉力方差
         # 平滑项（一阶差分）
         for t in range(1, T):
             delta_theta = theta_sequence[t] - theta_sequence[t - 1]
@@ -198,7 +247,8 @@ def global_optimize_theta_sequence(n, a_sequence, ml):
         # 拉力项梯度
         for t in range(T):
             D = compute_D(theta_seq[t], phi0)
-            F = ml * (a_sequence[t] + np.array([0, 0, 9.81]))
+            # F = ml * (a_sequence[t] + np.array([0, 0, 9.81]))
+            F = ml * (a_sequence[t] )
             grad[t * n:(t + 1) * n] = calGradient(theta_seq[t], phi0, D, F, n)
 
         # 一阶平滑项梯度
@@ -219,8 +269,8 @@ def global_optimize_theta_sequence(n, a_sequence, ml):
         return grad
 
     # 定义变量边界（所有时间步的theta均需满足[25°,70°]）
-    bounds = optimize_upper_bounds(a_sequence, phi0) #FIXME:效果变差，拉力差更大
-    # bounds = [(np.deg2rad(25), np.deg2rad(70)) for _ in range(T * n)]
+    # bounds = optimize_upper_bounds(a_sequence, phi0) #FIXME:效果变差，拉力差更大
+    bounds = [(np.deg2rad(25), np.deg2rad(70)) for _ in range(T * n)]
     # 全局优化
     result = minimize(
         global_func,
@@ -427,11 +477,11 @@ if __name__ == '__main__':
     # [1.18367421e+00 4.07287754e-02 3.41368272e+01]
     # [3.00013307e+00 2.25154864e-02 2.17705628e+01]
     import matplotlib.pyplot as plt
-    a_vec = np.array([[2, 0, 9.8],
+    a_vec = np.array([[0.4, 0, 9.8],
                       [9.99999586, 9.99999975, 9.54623434],
                       [3.00013307e+00 ,2.25154864e-02 ,2.17705628e+01]])
     # a_vec = limit_vector_magnitude(a_vec, 5.0)
-    a_vec = a_vec[0]
+    a_vec = a_vec[0] #  [8.14093593 5.21713153 2.29332713 5.21713153]  [6.16889885 5.45583404 4.60745494 5.45583404] [5.97593701 5.51989617 4.78129731 5.51989617]
     n = 4
     ml = 1
     theta, phi = update_opt_phi_theta(n, a_vec, ml)
@@ -443,7 +493,7 @@ if __name__ == '__main__':
     t_vec = phi_theta2_tension(D, a_vec, 9.81, ml)
     print(f'acc: {a_vec}')
     print(f"opt tension: {t_vec}")  # 优化后的拉力分配
-    theta_ori =  np.deg2rad([62, 70, 70, 70])  # [70] * 4
+    theta_ori =  np.deg2rad([70, 70, 70, 70])  # [70] * 4
     D_ori = np.array([Spher2Cart_unit(theta_ori[i], phi[i]) for i in range(n)]).T  # calculate D
     t_ori = phi_theta2_tension(D_ori, a_vec, 9.81, ml)
     print(f"original tension: {t_ori}")

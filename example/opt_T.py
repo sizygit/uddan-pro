@@ -24,6 +24,7 @@ class ParaStruct:
         self.ctrlrange_dict = {'thrust': [0.0, 40.0], 'Mx': [-3.0, 3.0], 'My': [-3.0, 3.0], 'Mz': [-3.0, 3.0]}
         self.quad_poso = [  # [0.0, 0.0, 2.0]
             [0.6, 0.0, 0.8], [0.0, 0.6, 0.8], [-0.6, 0.0, 0.8], [0.0, -0.6, 0.8]
+            # [0.4223, 0.4223, 0.8],[-0.4223, 0.4223, 0.8],[-0.4223, -0.4223, 0.8],[0.4223, -0.4223, 0.8]
             # [-0.6, 0.0, 1.8], [0.6, 0.0, 1.8]
         ]
         self.n = np.size(self.quad_poso, 0)
@@ -37,7 +38,7 @@ class ParaStruct:
         # self.A = np.zeros((self.n, self.n))  0.4
         self.B = 0.6 * np.array([1] * self.n)  #TODO: 协同误差还是单体误差  0.5
 
-        self.posKp = np.array([3.6, 3.6, 18.1])  #2.6 2.6 6.1
+        self.posKp = np.array([4.6, 4.6, 18.1])  #2.6 2.6 6.1
         self.posKd = np.array([5, 5, 8.9])  # 4, 4, 5.9
         self.posKi = np.array([0.08, 0.08, 0.08])
 
@@ -76,11 +77,13 @@ store_u_list = np.zeros((para.n, 4)) # 保存控制输入的二维矩阵
 store_ang_list = np.zeros((para.n, 6)) # 保存姿态角(feedback+desired)的二维矩阵
 store_pos_list = np.array(para.quad_poso).reshape(-1, 3)  # 保存实际位置序列的二维矩阵
 store_vel_list = 0 * np.array(para.quad_poso).reshape(-1, 3)  # 保存实际速度序列的二维矩阵
+store_acc_list = 0 * np.array(para.quad_poso).reshape(-1, 3)  # 保存实际加速度序列的二维矩阵
 store_posd_list = np.array(para.quad_poso).reshape(-1, 3)  # 保存期望位置序列的二维矩阵
 store_error_list = np.zeros_like(para.quad_poso).reshape(-1, 3)  # 保存位置误差的二维矩阵
 store_tension_vec_list = np.zeros_like(para.quad_poso).reshape(-1, 3)  # 保存拉力向量的二维矩阵
 store_load_list = np.array(para.load_pos0).reshape(-1, 3)  # 保存载荷位置序列的二维矩阵
 store_loadvel_list =  0 * np.array(para.load_pos0).reshape(-1, 3)  # 保存载荷速度序列的二维矩阵
+store_loadacc_list = 0 * np.array(para.load_pos0).reshape(-1, 3) # 保存载荷加速度序列的二维矩阵
 store_t_force_list = [0] * para.n  # 保存拉力模长的列表
 store_theta_list = np.zeros((1, para.n))  # 保存俯仰角度的列表
 store_theta_des_list = np.zeros((1, para.n))  # 保存期望俯仰角度的列表
@@ -161,7 +164,8 @@ while mdl.t < sim_T:
     store_posd_list = np.append(store_posd_list, np.array(pos_d).reshape(-1, 3), axis=0)  # 保存期望位置
     for j in range(para.n):
         store_pos_list = np.append(store_pos_list, mdl.state.quads[j].position.reshape(-1, 3), axis=0)  # 保存实际位置
-        store_vel_list = np.append(store_pos_list, mdl.state.quads[j].velocity.reshape(-1, 3), axis=0)  # 保存实际速度
+        store_vel_list = np.append(store_vel_list, mdl.state.quads[j].velocity.reshape(-1, 3), axis=0)  # 保存实际速度
+        store_acc_list  = np.append(store_acc_list, mdl.state.quads[j].acc.reshape(-1, 3), axis=0)  # 保存实际速度
         # 保存张力  *-1 得到无人机受到的张力方向  error
         store_tension_vec_list = np.append(store_tension_vec_list, -1 * mdl.state.cables[j].tension.reshape(-1, 3),
                                            axis=0)
@@ -169,10 +173,11 @@ while mdl.t < sim_T:
     store_t_list = np.append(store_t_list, mdl.t)
     store_load_list = np.append(store_load_list, mdl.state.load_pos.reshape(-1, 3), axis=0)  # 保存载荷位置
     store_loadvel_list = np.append(store_loadvel_list, mdl.state.load_vel.reshape(-1, 3), axis=0)  # 保存载荷速度
+    store_loadacc_list = np.append(store_loadacc_list, mdl.state.load_acc.reshape(-1, 3), axis=0)  # 保存载荷加速度
 
     D = oT.compute_D(theta_d.reshape(-1, 4), phi)
     acc_cal = (store_loadvel_list[-1] -  store_loadvel_list[-2]) / para.dt
-    store_norm_tension = oT.phi_theta2_tension(D, acc_cal, 9.81, para.m_load)
+    store_norm_tension = oT.phi_theta2_tension(D, acc_cal, 9.81, para.m_load)  # 计算差分得到的载荷加速度对应的标称拉力
     store_norm_tension_list = np.append(store_norm_tension_list, store_norm_tension.reshape(-1, 4), axis=0)
     # store_error_list = np.append(store_error_list, formation_error[0:para.n:], axis=0)
 
@@ -195,19 +200,6 @@ while mdl.t < sim_T:
     store_u_list = np.append(store_u_list, u.reshape(-1, 4), axis=0)  # 保存实际位置
     store_ang_list = np.append(store_ang_list, angle_vec.reshape(-1, 6), axis=0)  # 保存姿态角信息
 """" 绘制图像部分  """
-# from scipy.io import savemat
-# savemat('UAV_4-1_ori.mat', {
-#     'pos_uav': store_pos_list,
-#     'vel_uav': store_vel_list,
-#     'vel_load': store_loadvel_list,
-#     'pos_load':store_load_list,
-#     'tension_vel':store_tension_vec_list,
-#     't':store_t_list,
-#     'theta':store_theta_list,
-#     'theta_des':store_theta_des_list,
-#     'u':store_u_list,
-# })
-
 # time_steps = np.arange(np.size(store_posd_list, 0))
 # 绘制拉力变化曲线  ori-0.398
 figs_tension = plot_tension_curve(store_t_list, store_t_force_list, store_tension_vec_list,
@@ -224,22 +216,43 @@ fig0 = plot_theta_curve(store_t_list, store_theta_list, store_theta_des_list, pa
 # fig3d, ax3d = plot_3d_trajectory(store_posd_list, store_pos_list,store_load_list, para)
 
 # 绘制多项式轨迹以及实际载荷轨迹
-ax_load = traj_gen.plot_trajectory()
-ax_load.plot(store_load_list[:, 0], store_load_list[:, 1], store_load_list[:, 2], label='pos_load')
-ax_load.legend()
-ax_load.set_zlim(0, 3)
-ax_load.grid(True)
+# ax_load = traj_gen.plot_trajectory()
+# ax_load.plot(store_load_list[:, 0], store_load_list[:, 1], store_load_list[:, 2], label='pos_load')
+# ax_load.legend()
+# ax_load.set_zlim(0, 3)
+# ax_load.grid(True)
 
 # 绘制位置变化曲线
-figs_pos = plot_position_curves(store_t_list, store_posd_list, store_pos_list,para)
+# figs_pos = plot_position_curves(store_t_list, store_posd_list, store_pos_list,para)
+figs_pos = plot_position_curves(store_t_list, store_vel_list, store_acc_list, para)
 
 # 绘制姿态角度变化曲线
 figs_angle = plot_angle_curves(store_t_list, store_ang_list, para)
 
 # 绘制误差变化曲线
 # error_figs = plot_error_curves(store_t_list, store_error_list, para)
-
 plt.show()
 
+from scipy.io import savemat
+from datetime import datetime
+save_data = input("是否需要保存数据？(y/n): ").strip().lower() # 提问是否需要保存数据
+if save_data == 'y':
+    # 使用当前时间生成文件名
+    file_name = datetime.now().strftime("UAV_%m%d-%H-%M.mat")
+    # 保存数据
+    savemat(file_name, {
+        'pos_uav': store_pos_list,
+        'vel_uav': store_vel_list,
+        'acc_uav': store_acc_list,
+        'vel_load': store_loadvel_list,
+        'pos_load': store_load_list,
+        'acc_load': store_loadacc_list,
+        'tension_vel': store_tension_vec_list,
+        't': store_t_list,
+        'theta': store_theta_list,
+        'theta_des': store_theta_des_list,
+        'u': store_u_list,
+    })
+    print(f"数据已保存到文件: {file_name}")
 
 
