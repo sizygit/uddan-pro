@@ -12,7 +12,8 @@ __all__ = [
     "plot_tension_curve",
     "plot_theta_curve",
     "plot_angle_curves",
-    "plot_normtension_curve"
+    "plot_normtension_curve",
+    "plot_load_curve"
 ]
 
 
@@ -276,6 +277,33 @@ def plot_theta_curve(store_t_list, store_theta_list, store_theta_des_list, para)
 
 
     figs.append(fig4)  # 将图形添加到列表中
+    return figs
+
+def plot_load_curve(store_t_list, pos,vel,acc):
+    figs = []
+    fig1, ax1 = plt.subplots(3, 1, figsize=(10, 8))
+    # 绘制载荷位置变化曲线
+    ax1[0].plot(store_t_list, pos[:, 0], label=f'load_px', linestyle='-')
+    ax1[1].plot(store_t_list, pos[:, 0], label=f'load_py', linestyle='-')
+    ax1[2].plot(store_t_list, pos[:, 0], label=f'load_pz', linestyle='-')
+    ax1[0].plot(store_t_list, vel[:, 0], label=f'load_vx', linestyle='--')
+    ax1[1].plot(store_t_list, vel[:, 1], label=f'load_vy', linestyle='--')
+    ax1[2].plot(store_t_list, vel[:, 2], label=f'load_vz', linestyle='--')
+    ax1[0].plot(store_t_list, acc[:, 0], label=f'load_ax', linestyle='-.')
+    ax1[1].plot(store_t_list, acc[:, 1], label=f'load_ay', linestyle='-.')
+    ax1[2].plot(store_t_list, acc[:, 2], label=f'load_vz', linestyle='-.')
+    ax1[0].set_ylabel('X')
+    ax1[0].legend()
+    ax1[0].grid(True)
+    ax1[1].set_ylabel('Y')
+    ax1[1].legend()
+    ax1[1].grid(True)
+    ax1[2].set_ylabel('Z')
+    ax1[2].legend()
+    ax1[2].grid(True)
+    fig1.suptitle(f'Load\'s PVA')
+    ax1[2].set_xlabel('Time Step')
+    figs.append(fig1)  # 将图形添加到列表中
     return figs
 
 def plot_angle_curves(store_t_list, store_ang_list, para):
