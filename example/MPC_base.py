@@ -27,7 +27,7 @@ class mpcPosctl():
         self._w_max_xy = 6.0
         self._thrust_min = 2.0
         self._thrust_max = 20.0
-        self._max_acc = 5  # max acceleration（姿态跟踪器跟踪效果较低，因此该值会比真实的最大加速度还大）
+        self._max_acc = 2  # max acceleration（姿态跟踪器跟踪效果较低，因此该值会比真实的最大加速度还大）
         # state dimension (px, py, pz, vx, vy, vz) #osition and linear velocity
         self._s_dim = 6
         # action dimensions (exp_acc)
@@ -49,6 +49,7 @@ class mpcPosctl():
             self._S = np.diag([0.3, 0.3, 0.3])  # 示例值，按需调整
         else:
             self._S = S
+        self._delta_u_max = [1.0 * dt for _ in range(self._u_dim)]
 
         # cost matrix for tracking the pendulum motion
         # self._Q_pen = np.diag([
@@ -154,6 +155,7 @@ class mpcPosctl():
             delta_u_k = U[:, k] - [0, 0, self._gz]
             cost_u_k = f_cost_u(delta_u_k)
             self.mpc_obj += cost_state_k + cost_u_k #+ cost_gap_k
+            # 原有的Δu成本项可保留（用于平滑控制量）
             if k < self._N - 1:
                 delta_u_change = U[:, k + 1] - U[:, k]
                 cost_change = f_cost_u_change(delta_u_change)
@@ -162,6 +164,16 @@ class mpcPosctl():
             # self.nlp_g += [X_next[:, k] - X[:, k + 1]]
             # self.lbg += g_min
             # self.ubg += g_max
+
+        for k in range(self._N):
+            # ... 其他成本项计算 ...
+            if k < self._N - 1:
+                delta_u_change = U[:, k + 1] - U[:, k]
+                # 添加Δu的硬约束：-delta_u_max ≤ Δu ≤ delta_u_max
+                for i in range(self._u_dim):
+                    self.nlp_g.append(delta_u_change[i])
+                    self.lbg.append(-self._delta_u_max[i])  # 下界
+                    self.ubg.append(self._delta_u_max[i])  # 上界
 
         # nlp objective
         nlp_dict = {'f': self.mpc_obj,
@@ -212,8 +224,6 @@ class mpcPosctl():
         #
         sol_x0 = self.sol['x'].full()  # full() get a array
         opt_u = sol_x0.reshape(-1, self._u_dim) # row vector is a input
-        #FIXME:?????? Z控制量老为定值
-        # opt_u +=  [0, 0, self._gz]
         # Warm initialization
         self.nlp_x0 = sol_x0
         # x0_array = np.reshape(sol_x0[:-self._s_dim], newshape=(-1, self._s_dim + self._u_dim))
@@ -244,7 +254,128 @@ class mpcPosctl():
         return F
 
 
+class mpcPosctlInc:
+    """
+    增量式非线性MPC:
+    决策变量为 Δu 序列，uₖ = uₖ₋₁ + Δuₖ
+    """
+
+    def __init__(self, N, dt, Q=None, R=None, S=None):
+        self._N = N
+        self._dt = dt
+        self._gz = 9.8
+        self._s_dim = 6
+        self._u_dim = 3
+        # 状态&动作权重
+        self._Q_state = Q if Q is not None else np.diag([100, 100, 100,10, 10, 10])
+        # self._Q_u = R if R is not None else np.diag([0.1, 0.1, 0.1])
+        # Δu 权重
+        self._S = S if S is not None else np.diag([0.3, 0.3, 0.3])
+        # Δu 上下界
+        max_du = 13.0*dt
+        lb = [-max_du,-max_du,-max_du]*self._N
+        ub = [ max_du,max_du,max_du]*self._N
+        self.lbw, self.ubw = lb, ub
+        self.nlp_g  = []
+        self._initDynamics()
+
+    def _initDynamics(self):
+        # 符号变量
+        px,py,pz,vx,vy,vz = ca.SX.sym('px'), ca.SX.sym('py'), ca.SX.sym('pz'),ca.SX.sym('vx'), ca.SX.sym('vy'), ca.SX.sym('vz')
+        self._x = ca.vertcat(px,py,pz,vx,vy,vz)
+        ux,uy,uz = ca.SX.sym('ux'),ca.SX.sym('uy'),ca.SX.sym('uz')
+        self._u = ca.vertcat(ux,uy,uz)
+        d = ca.SX.sym('d',3)
+        # 连续动力学
+        x_dot = ca.vertcat(vx,vy,vz,
+                           ux + d[0],
+                           uy + d[1],
+                           uz - self._gz + d[2])
+        f = ca.Function('f',[self._x,self._u,d],[x_dot])
+        # RK4 一步离散
+        def _rk4(dt):
+            X0 = ca.SX.sym('X0',6)
+            U0 = ca.SX.sym('U0',3)
+            D0 = ca.SX.sym('D0',3)
+            M=4; DT=dt/M; X=X0
+            for _ in range(M):
+                k1 = DT * f(X,U0,D0)
+                k2 = DT * f(X+0.5*k1,U0,D0)
+                k3 = DT * f(X+0.5*k2,U0,D0)
+                k4 = DT * f(X+k3,U0,D0)
+                X = X + (k1+2*k2+2*k3+k4)/6
+            return ca.Function('F',[X0,U0,D0],[X])
+        F = _rk4(self._dt)
+
+        # 定义参数向量 P = [x0,(N)个参考,state, last_u₋₁, disturbance]
+        # 改为 N 步参考
+        total_ref = self._s_dim * self._N
+        P = ca.SX.sym('P', self._s_dim + total_ref + self._u_dim + self._u_dim)
+
+        x0 = P[0: self._s_dim]
+        ref_all = ca.reshape(
+            P[self._s_dim: self._s_dim + total_ref],
+            self._s_dim,
+            self._N
+        ) # (6 * N)
+        # 提取 last_u 和 disturbance
+        last_u = P[self._s_dim + total_ref: self._s_dim + total_ref + self._u_dim]
+        disturbance = P[self._s_dim + total_ref + self._u_dim:]
+
+        # 决策变量 ΔU
+        dU = ca.SX.sym('dU', self._u_dim, self._N)
+        self.nlp_x = ca.reshape(dU, -1, 1)
+
+        # 重构 U 序列 & 状态轨迹 X
+        U_seq = []
+        u_prev = last_u
+        for k in range(self._N):
+            u_k = u_prev + dU[:,k]
+            U_seq.append(u_k)
+            u_prev = u_k
+
+        # X = ca.SX(self._s_dim, self._N+1)
+        # X[:,0] = x0
+        X_list = [x0]
+        for k in range(self._N):
+            x_next = F(X_list[-1], U_seq[k], disturbance)
+            X_list.append(x_next)
+
+        X = ca.hcat(X_list)
+
+        # 成本只计算 1..N 因为索引0对应的初始状态x0
+        Delta_s = X[:,1:] - ref_all
+        cost = 0
+        for k in range(self._N):
+            cost += Delta_s[:,k].T @ self._Q_state @ Delta_s[:,k]
+            # cost += (U_seq[k] - ca.vertcat(0,0,self._gz)).T @ self._Q_u @ (U_seq[k] - ca.vertcat(0,0,self._gz))
+            cost += dU[:,k].T @ self._S @ dU[:,k]
+
+        nlp = {'x': self.nlp_x, 'p': P, 'f': cost}
+        self.solver = ca.nlpsol('solver','ipopt',nlp,{'ipopt.print_level':0,'print_time':False})
+
+    def solve(self, ref_states, last_u, disturbance=None):
+        last_u = np.array(last_u).reshape(self._u_dim, 1)
+        if disturbance is None:
+            disturbance = np.zeros(self._u_dim)
+        # 只传 N 步参考
+        p_vec = np.hstack((ref_states.flatten(), last_u.flatten(), disturbance))
+
+        x0 = np.zeros((self._u_dim * self._N, 1))
+        start_time = time.time()
+        sol = self.solver(x0=x0, lbx=self.lbw, ubx=self.ubw, p=p_vec)
+
+        du_opt = sol['x'].full()
+        # u_seq = np.hstack((last_u, du_opt))
+        u_seq = np.vstack((last_u.reshape(-1, self._u_dim), du_opt.reshape(-1, self._u_dim)))
+        u_opt = np.cumsum(u_seq, axis=0)[1:,:] # 每一行均为一个步长的控制量 （N，u_dim）
+        print(f"Time elapsed: {time.time() - start_time} opt u(exp acc): {u_opt[0]}", )
+        return u_opt
+
+
+
 def generate_pos_vel_mpc(t, N, dt, cur_p, cur_v, t2vel, t2pos):
+    """  current state + ref state"""
     t_seq = np.linspace(t, t + (N - 1) * dt, N)
     pv_list = []
     pv_list.append(np.hstack((cur_p, cur_v)))
@@ -262,9 +393,43 @@ if  __name__ == "__main__":
     # s.solve([0,0,0,0,0,0] + [1,1,1,0,0,0] * 10)
     # s.solve([0, 0, 0, 0, 0, 0] + [2, 2, 2, 0, 0, 0] * 10)
 
-    temp = mpcPosctl(2, 0.1, S=np.diag([0, 0, 0]))
-    ref = np.array([ 0.75604862 ,-0.01457808 , 1.98391634 , 0.48314085 ,-0.02969889  ,0.0,
-            2.4832781  ,-0.06157046 , 2.         , 1.18851701 , 0.02818885 , 0.,
-            2.91289846 ,-0.02129768 , 2.         , 0.91992865 , 0.18702312 , 0.])
-    result = temp.solve(ref)
-    print(result)
+    N = 5
+    dt = 1
+
+    temp = mpcPosctlInc(N, dt, S=np.diag([0, 0, 0]))
+    # ref = np.array([ 0.75604862 ,-0.01457808 , 1.98391634 , 0.48314085 ,-0.02969889  ,0.0,
+    #         2.4832781  ,-0.06157046 , 2.         , 1.18851701 , 0.02818885 , 0.,
+    #         2.91289846 ,-0.02129768 , 2.         , 0.91992865 , 0.18702312 , 0.])
+    x0 = [0 ,0 , 0 ,    0  ,0  ,0.0]
+    goal = [
+        # 1  , 0 , 2.         , 1.0 , 0.0 , 0.,
+        #     1.5 , 0 , 2.         , 0 , 0.0 , 0.,
+            2 , 2 , 2.         , 0 , 0.0 , 0.
+            ]
+    ref = np.array([x0+goal*N])
+    u_seq = temp.solve(ref, [0, 0, 9.8])
+    print(u_seq)
+
+
+
+    import matplotlib.pyplot as plt
+    # 仿真 forward 模拟
+    x = x0.copy()
+    X_list = [x.copy()]
+    for u in u_seq:
+        a = u - np.array([0, 0, 9.8])
+        x_dot = np.zeros(6)
+        x_dot[0:3] = x[3:6]
+        x_dot[3:6] = a
+        x += x_dot * dt
+        X_list.append(x.copy())
+
+    X_array = np.array(X_list)
+
+    # 绘图
+    fig = plt.figure(figsize=(6,4))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.plot(X_array[:,0], X_array[:,1], X_array[:,2], 'b.-', label='Trajectory')
+    ax.scatter(goal[0], goal[1], goal[2], c='r', label='Target')
+    ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
+    ax.legend(); plt.title('Incremental MPC Trajectory'); plt.tight_layout(); plt.show()

@@ -92,10 +92,15 @@ store_norm_tension_list = np.zeros((1, para.n))
 store_t_list = [0]
 
 import MPC_base as _mpc
-loadctl = _mpc.mpcPosctl(15,0.4,
+loadctl = _mpc.mpcPosctl(8,0.2,
           Q=np.diag([50, 50, 50, 1, 1, 1]),
-          R=np.diag([0.5, 0.5, 0.5]),
-          S=np.diag([0.3, 0.3, 0.3]))
+          R=np.diag([0.5, 0.5, 1.5]),
+          S=np.diag([6.3, 6.3, 2.3]))
+# loadctl = _mpc.mpcPosctlInc(8,0.2,
+#           Q=np.diag([50, 50, 50, 1, 1, 1]),
+#           # R=np.diag([0.5, 0.5, 1.5]),
+#           S=np.diag([6.3, 6.3, 2.3]))
+# last_mpc_u = [0,0, 9.8]
 thetactl = LoadCentricController(para.n, para.l)
 mdl._query_latest_state()
 
@@ -128,7 +133,17 @@ while mdl.t < sim_T:
                                         lambda t : traj_gen.cal_trajectory_order(t, 1),
                                         lambda t : traj_gen.cal_trajectory_order(t, 0))
     exp_acc = loadctl.solve(ref_states=loadRef.flatten())
-    # print(f'acc: {exp_acc[0:2]}')
+
+    # # 计算时间序列
+    # times = np.linspace(t_tra,
+    #                     t_tra + (T - 1) * para.dt,
+    #                     T)
+    # # 用 traj_gen 输出标称加速度作为期望加速度
+    # exp_acc = np.array(traj_gen.cal_trajectory_order(times, 2)) + np.array([0, 0, 9.8])  # 加上重力加速度
+
+    print(f'exp acc: {exp_acc[0:]}')
+    print(f' current load pos: {mdl.state.load_pos} vel: {mdl.state.load_vel} acc: {mdl.state.load_acc}')
+    print(f' reference load pose: {loadRef[1, 0:3]} vel: {loadRef[1, 3:6]}')
 
     # acc_L = traj_gen.cal_trajectory_order(np.linspace(mdl.t, mdl.t + (T - 1) * para.dt, T), 2)
     acc_L = exp_acc
@@ -177,7 +192,8 @@ while mdl.t < sim_T:
 
     D = oT.compute_D(theta_d.reshape(-1, 4), phi)
     acc_cal = (store_loadvel_list[-1] -  store_loadvel_list[-2]) / para.dt
-    store_norm_tension = oT.phi_theta2_tension(D, acc_cal, 9.81, para.m_load)  # 计算差分得到的载荷加速度对应的标称拉力
+    store_norm_tension = oT.phi_theta2_tension(D, acc_cal + np.array([0,0,9.8]), 9.81, para.m_load)  # 计算差分得到的载荷加速度对应的标称拉力
+    # last_mpc_u = acc_cal + np.array([0,0,9.8])
     store_norm_tension_list = np.append(store_norm_tension_list, store_norm_tension.reshape(-1, 4), axis=0)
     # store_error_list = np.append(store_error_list, formation_error[0:para.n:], axis=0)
 
@@ -212,6 +228,9 @@ plot_normtension_curve(store_t_list, store_norm_tension_list, para)
 # plot_power_and_energy_curves(store_t_list, P_total_multi,0.02)
 # 创建俯仰角度和期望俯仰角度的图形
 fig0 = plot_theta_curve(store_t_list, store_theta_list, store_theta_des_list, para)
+
+# 绘制载荷pva
+fig_load = plot_load_curve(store_t_list,store_load_list,store_loadvel_list,store_loadacc_list)
 # 绘制三维轨迹
 # fig3d, ax3d = plot_3d_trajectory(store_posd_list, store_pos_list,store_load_list, para)
 
@@ -252,6 +271,7 @@ if save_data == 'y':
         'theta': store_theta_list,
         'theta_des': store_theta_des_list,
         'u': store_u_list,
+        'ang': store_ang_list
     })
     print(f"数据已保存到文件: {file_name}")
 
